@@ -311,9 +311,9 @@ ID and title on a new line."
       (deft-find-all-files-no-prefix))))
   (insert zetteldeft-link-indicator
           (zetteldeft--lift-id file)
+          (zetteldeft--lift-file-title (concat deft-directory file))
           zetteldeft-link-suffix
-          " "
-          (zetteldeft--lift-file-title (concat deft-directory file))))
+          " "))
 
 (defcustom zetteldeft-id-filename-separator " "
   "String to separate zetteldeft ID from filename."
