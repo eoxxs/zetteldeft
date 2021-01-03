@@ -524,12 +524,7 @@ Prepended by `zetteldeft-title-prefix' and appended by `zetteldeft-title-suffix'
 (defun zetteldeft--lift-file-title (zdFile)
   "Return the title of a zetteldeft note.
 ZDFILE should be a full path to a note."
-  (let ((deft-use-filename-as-title nil))
-    (deft-parse-title
-      zdFile
-      (with-temp-buffer
-        (insert-file-contents zdFile)
-        (buffer-string)))))
+  (string-trim-right (replace-regexp-in-string zetteldeft-id-regex "" (deft-base-filename zdFile))))
 
 ;;;###autoload
 (defun zetteldeft-file-rename ()
