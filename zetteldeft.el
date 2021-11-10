@@ -300,17 +300,23 @@ ID and title on a new line."
             "\n"))
   (message "Backlink added."))
 
+(defun zetteldeft--create-descriptive-link (zdId)
+  "Create a ORG compatible link with the file title as the descriptor."
+  (insert "[["
+          zetteldeft-link-indicator
+          zdId
+          zetteldeft-link-suffix
+          "]["
+          (zetteldeft--id-to-title zdId)
+          "]]"))
+
 ;;;###autoload
 (defun zetteldeft-find-file-full-title-insert (file)
   "Find deft file FILE and insert a link with title."
   (interactive (list
     (completing-read "File to insert full title from: "
       (deft-find-all-files-no-prefix))))
-  (insert zetteldeft-link-indicator
-          (zetteldeft--lift-id file)
-          (zetteldeft--lift-file-title (concat deft-directory file))
-          zetteldeft-link-suffix
-          " "))
+  (zetteldeft--create-descriptive-link (zetteldeft--lift-id file)))
 
 (defcustom zetteldeft-id-filename-separator " "
   "String to separate zetteldeft ID from filename."
@@ -358,10 +364,12 @@ Similar to `zetteldeft-new-file', but insert a link to the new file."
   (interactive (list (read-string "Note title: ")))
   (let ((ogId (zetteldeft--current-id))
         (zdId (zetteldeft-generate-id str)))
-    (insert zetteldeft-link-indicator
+    (insert "[["
+     zetteldeft-link-indicator
             zdId
             zetteldeft-link-suffix
-            " " str)
+            "]["
+            str "]]")
     (zetteldeft-new-file str zdId)
     (newline)
     (insert zetteldeft-backlink-prefix
