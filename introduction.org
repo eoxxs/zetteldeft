@@ -14,18 +14,17 @@ In the spirit of Zettelkasten, Zetteldeft maintains a flat hierarchy at the leve
 The result is a free-form note taking system of linked notes and ideas.
 Or, as the original Zettelkasten creator Niklas Luhmann would call it: a partner in communication.[fn:lhcs]
 
-I've been maintaining this code for personal use since 2018,[fn:innp] and have been sharing its code on Github for a while now.
-So after all this time, it's high time for a proper introduction of this package.
-
-The text below introduces the package, but to get familiar with Zetteldeft from within Zetteldeft check out the =zd-tutorial= repository on [[https://github.com/EFLS/zd-tutorial][Github]].
+The text below introduces Zetteldeft, but even easier is the *tutorial*: get to know Zetteldeft from within Zetteldeft with =zd-tutorial= on [[https://github.com/EFLS/zd-tutorial][Github]].
 Installation instructions included.
 Clone it and get started!
 
-Just want source?
+Just want *source*?
 Take a look at this [[file:zetteldeft.org]["literate code"]], which contains both source and documentation,
 or simply refer to the [[https://github.com/efls/zetteldeft][Github repository]].
 
-For an introduction, please read on.
+I've been maintaining this code for personal use since 2018,[fn:innp] and have been sharing it on Github for a while now.
+It's high time for a proper introduction of this package.
+
 One last note: I hope to make this a living document, so expect changes and additions.
 And feel free to leave comments, for example via [[https://github.com/efls/zetteldeft][Github]], [[https://twitter.com/EFLS0][Twitter]], or (preferably) [[https://mastodon.social/@EFLS][Mastodon]].
 
@@ -91,7 +90,7 @@ That's pretty much all there is to it, for the basics at least.
 All of this is done in plain text.
 Org-mode by default, but it really is formatting agnostic.
 
-A way to further organize your notes, is to use tags, indicated with a =#=.
+A way to further organize your notes, is to use tags, indicated with a =#= (or another string, it's all customizable).
 In my Zettelkasten, for example, I use =#zetteldeft= for all notes related to...
 Well, you can guess.
 
@@ -131,6 +130,7 @@ Or simply hit =C-c d D= to open Deft and start a full text search.
 To quickly find out which notes *refer* to the current note, use =C-c d c= (which is =zetteldeft-search-current-id=).
 
 To search a *tag*, hit =C-c d t= and select a highlighted tag, similar to how you follow a link.
+Easily insert tags with =C-c d #= and select one from the list (or enter a new one).
 To generate a *list* of tags currently in your Zettelkasten, use =C-c d T=.
 Quickly launch a search for a tag of choice with =C-c d /=.
 
@@ -158,6 +158,7 @@ Personally, I prefer vim style bindings behind a leader key, set up with general
 | =C-c d l= | =zetteldeft-avy-link-search=             |
 | =C-c d t= | =zetteldeft-avy-tag-search=              |
 | =C-c d T= | =zetteldeft-tag-buffer=                  |
+| =C-c d #= | =zetteldeft-tag-insert=                |
 | =C-c d i= | =zetteldeft-find-file-id-insert=         |
 | =C-c d I= | =zetteldeft-find-file-full-title-insert= |
 | =C-c d o= | =zetteldeft-find-file=                   |

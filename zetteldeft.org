@@ -1,6 +1,6 @@
 #+title: Zetteldeft
 #+author: EFLS
-#+date: 2018-2020
+#+date: 2018-2021
 :headers:
 # By default, each block of code should tangle & evaluate silently
 #+PROPERTY: header-args:emacs-lisp :results silent :tangle zetteldeft.el
@@ -16,15 +16,12 @@ Check out the Github [[https://github.com/EFLS/zetteldeft][repository]] to get t
 Read on for an introduction and some documentation.
 
 Latest additions:
- - *30 Dec*: Renaming notes will now insert a title if there is none, thanks to jeffvalk
- - *26 Nov*: Add =zetteldeft-search-tag=, thanks to maw.
- - *07 Oct*: Add =zetteldeft-dead-links-buffer= to show dead links.
- - *06 Oct*: Add export functionality.
- - *20 Sep*: Add =zetteldeft-go-home=.
- - *19 Sep*: Throw error when generated IDs are not unique.
- - *21 Aug*: Add =zetteldeft-new-file-and-backlink= to create new notes.
- - *20 Aug*: Update =zetteldeft-tag-buffer= to include tag frequency.
- - *23 July*: Add customizable =zetteldeft-custom-id-function= for ID generation.
+ - *19 Aug*: Update =zetteldeft-browse= to handle more keys
+ - *01 Aug*: Automated [[#list-links][list of links]] with =zetteldeft-insert-list-links-block=
+ - *13 Jul*: Where backlinks go is now customizable with =zetteldeft-backlink-location-function=
+ - *19 May*: Add =zetteldeft-extract-region-to-note=, thanks to Sodaware
+ - *13 May*: Introduce & customize =zetteldeft--insert-link=
+ - *11 Mar*: Add =zetteldeft-tag-insert=, thanks to puzan
 
 Older changes are mentioned in the [[#changelog][changelog]] below.
 
@@ -94,6 +91,22 @@ Installing and enabling =zetteldeft= with the default configuration is straightf
  2. You can further configure =deft= according to section [[#suggested-deft]].
     Do this the =spacemacs= way, i.e. in =dotspacemacs/user-config=.
     Simply add =(setq ...)= there.
+
+*** =doom= installation
+
+Installing =zetteldeft= for =doom-emacs= is pretty simple.
+In =doom=, you can navigate to your config files by typing =SPC f p=.
+
+1. Within your =packages.el= file, add this line:
+   #+begin_src emacs-lisp :tangle no
+   (package! zetteldeft)
+   #+end_src
+
+2. Within =init.el= uncomment =deft= (found under =:ui=) by deleting the semicolons in front of it.
+
+   =avy= and =ace-window= are included by default with =doom=, so no need to install them.
+
+3. Refresh your =doom= session by typing =SPC h r r=, or by restarting emacs.
 
 *** Installing directly from source
 
@@ -198,7 +211,7 @@ Some declaration.
 #+BEGIN_SRC emacs-lisp
 ;;; zetteldeft.el --- Turn deft into a zettelkasten system -*- lexical-binding: t -*-
 
-;; Copyright (C) 2018-2020  EFLS
+;; Copyright (C) 2018-2021  EFLS
 
 ;; Author: EFLS <Elias Storms>
 ;; URL: https://efls.github.io/zetteldeft/
@@ -345,7 +358,7 @@ This can be
  - a link: a string between [[ brackets ]],
  - a tag matching `zetteldeft-tag-regex',
  - a link matching `zetteldeft-link-indicator',
-    `zettteldeft-id-regex' and `zetteldeft-link-suffix',
+    `zetteldeft-id-regex' and `zetteldeft-link-suffix',
  - or a word."
  (let* ((link-brackets-re "\\[\\[\\([^]]+\\)\\]\\]")
         (link-id-re (zetteldeft--link-regex))
@@ -373,6 +386,9 @@ Based on snippet suggested by =saf-dmitry= on deft's [[https://github.com/jrblev
 If there is only one result, open that file (unless DNTOPN is true)."
   ;; Sanitize the filter string
   (setq str (replace-regexp-in-string "[[:space:]\n]+" " " str))
+  ;; Switch to Deft window if buffer is currently visible
+  (when (deft-buffer-visible-p)
+    (select-window (deft-buffer-visible-p)))
   ;; Call deft search on the filter string
   (let ((deft-incremental-search t))
    (deft)
@@ -382,6 +398,9 @@ If there is only one result, open that file (unless DNTOPN is true)."
    (when (eq (length deft-current-files) 1)
      (deft-open-file (car deft-current-files)))))
 #+END_SRC
+
+When doing a global search, the Deft buffer is shown.
+To prevent that the Deft buffer is shown in multiple windows, first switch to the relevant window if the Deft buffer is already visible somewhere.
 
 **** =zetteldeft--search-filename= for string
 
@@ -393,15 +412,19 @@ Incremental search is turned off, and the filter is set to filenames only.
 #+BEGIN_SRC emacs-lisp
 (defun zetteldeft--search-filename (thisStr &optional otherWindow)
   "Search for deft files with string THISSTR in filename.
-Open if there is only one result (in another window if OTHERWINDOW is non-nil)."
+Open if there is only one result (in another window if OTHERWINDOW is non-nil).
+Return a message if no results are found."
   ;; Sanitize the filter string
   (setq thisStr (replace-regexp-in-string "[[:space:]\n]+" " " thisStr))
   ;; Call deft search on the filter string
   (let ((deft-filter-only-filenames t))
    (deft-filter thisStr t))
   ;; If there is a single match, open the file
-  (when (eq (length deft-current-files) 1)
-    (deft-open-file (car deft-current-files) otherWindow)))
+  (cond
+    ((eq (length deft-current-files) 1)
+     (deft-open-file (car deft-current-files) otherWindow))
+    ((eq (length deft-current-files) 0)
+     (message "No notes found with %s in name." thisStr))))
 #+END_SRC
 
 **** =zetteldeft--get-file-list= returns file list with search term
@@ -432,16 +455,14 @@ This relies on =zetteldeft--get-all-tags=, which is also used to generate the ta
 (defun zetteldeft-search-tag ()
   "Prompt interactively for Zetteldeft tag and launch Deft search"
   (interactive)
-  (let* ((tags (seq-sort 'string-lessp
-                         (seq-filter 'stringp
-                                     (zetteldeft--get-all-tags))))
+  (let* ((tags (zetteldeft--get-all-sorted-tags))
          (search-term (completing-read "Tag to search for: " tags)))
     (zetteldeft--search-global search-term t)))
 #+END_SRC
 
 As =zetteldeft--get-all-tags= parses the full set of files, this function might lag slightly on very big sets of notes.
 
-*** IDs, links and tags
+*** IDs and links
 **** A note on nomenclature, IDs and links
 :PROPERTIES:
 :CUSTOM_ID: id-links
@@ -694,22 +715,6 @@ Concat link indicator, id-regex, and link suffix."
           zetteldeft-link-suffix))
 #+END_SRC
 
-**** =zetteldeft-tag-regex= for finding tags
-
-This regular expression indicates what tags can look like.
-
-By default, tags start with a =#= or =@= and contain least one or more lower case letters.
-Dashes are allowed.
-
-#+BEGIN_SRC emacs-lisp
-(defcustom zetteldeft-tag-regex "[#@][[:alnum:]_-]+"
-  "Regular expression for zetteldeft tags."
-  :type 'string
-  :group 'zetteldeft)
-#+END_SRC
-
-Note that this regular may trip over =#= symbols used in URLS.
-
 **** =zetteldeft--lift-id= filters the ID from a string
 
 Return the zetteldeft ID from any string.
@@ -737,6 +742,77 @@ Here is a little test.
 
 #+RESULTS:
 : 2018-11-09-1934
+
+**** =zetteldeft--insert-link= inserts a link to a note
+
+Inserts a link to a note.
+Requires an ID as argument and an optional title.
+
+To format the inserted link, customize the =zetteldeft-insert-link-function= variable.
+
+#+BEGIN_SRC emacs-lisp
+(defun zetteldeft--insert-link (id &optional title)
+  "Insert a link to Zetteldeft note ID.
+If TITLE is included, use it as link text. To customize how inserted
+links are formatted, change the `zetteldeft-insert-link-function'
+variable."
+  (interactive)
+  (funcall zetteldeft-insert-link-function id title))
+#+END_SRC
+
+**** =zetteldeft-insert-link-function= customizes formatting of links
+
+This variable points to the function used to insert links.
+It can be customized to use a different link format.
+
+To customize beyond the options provided below, point this variable to a custom function.
+The custom function should take two parameters:
+ - a required =id=: the note identifier
+ - an optional =title=: used as descriptive link text
+
+Note that for the best results, link descriptions should include a =zetteldeft-link-indicator=, so that the =avy= functions for jumping to links will recognize the links provided.
+
+#+BEGIN_SRC emacs-lisp
+(defcustom zetteldeft-insert-link-function
+           #'zetteldeft-insert-link-zd-style
+  "The function to use when inserting note links.
+
+Use either
+ - `zetteldeft-insert-link-zd-style' for Zetteldeft type links
+ - `zetteldeft-insert-link-org-style' for Org-mode zdlink: links
+ - A custom function that takes two arguments: an ID and an optional title."
+  :type 'function
+  :options '(zetteldeft-insert-link-zd-style
+             zetteldeft-insert-link-org-style)
+  :group 'zetteldeft)
+#+end_src
+
+The default function is =zetteldeft-insert-link-zd-style=, which inserts:
+ - the =zetteldeft-link-indicator= (=§= by default)
+ - the ID of the destination note
+ - the =zetteldeft-link-suffix= (nil by default)
+ - a space and the title (if provided)
+
+#+begin_src emacs-lisp
+(defun zetteldeft-insert-link-zd-style (id &optional title)
+  "Insert a Zetteldeft link to note with provided ID."
+  (insert zetteldeft-link-indicator
+          id
+          zetteldeft-link-suffix)
+  (when title (insert " " title)))
+#+END_SRC
+
+Alternatively, when using Org-mode style links, =zetteldeft-insert-link-org-style= can be used.
+It inserts a formatted Org-link with =zdlink:= type.
+When no title is provided, the link itself is used as a descriptor.
+
+#+begin_src emacs-lisp
+(defun zetteldeft-insert-link-org-style (id &optional title)
+  "Insert a Zetteldeft link in Org-mode format as zdlink: type."
+  (if title
+      (insert "[[zdlink:" id "][" title "]]")
+    (insert "[[zdlink:" id "]]")))
+#+end_src
 
 *** Finding & linking files from minibuffer
 **** =zetteldeft-find-file= opens file from minibuffer
@@ -784,7 +860,8 @@ Set `zetteldeft-home-id' to an ID string of your home note."
 
 **** =zetteldeft-find-file-id-insert= inserts file id
 
-Select file from minibuffer and insert its link, prepended by =§= (or =zetteldeft-link-indicator= to be precise).
+Select file from minibuffer and insert a link to it.
+Uses just the ID and doesn't include a title description.
 
 Based on =deft-find-file=.
 
@@ -795,14 +872,13 @@ Based on =deft-find-file=.
   (interactive (list
     (completing-read "File to insert id from: "
       (deft-find-all-files-no-prefix))))
-  (insert (concat zetteldeft-link-indicator
-                  (zetteldeft--lift-id file)
-                  zetteldeft-link-suffix)))
+  (zetteldeft--insert-link (zetteldeft--lift-id file)))
 #+END_SRC
 
 **** =zetteldeft-backlink-add= adds a backlink to note
 
 Adding a backlink to another note is a good way to create structure.
+A backlink is a single line with a prefix string followed by a link to a note and its title.
 
 For such a backlink, we need a prefix.
 
@@ -814,7 +890,55 @@ Formatted as `org-mode' comment by default."
   :group 'zetteldeft)
 #+END_SRC
 
-Include the prefix on a new line after the title, and add ID and title.
+We also need to figure out where backlinks should go.
+Let's configure a customizable function to move to the location they should be put in.
+
+#+begin_src emacs-lisp
+(defcustom zetteldeft-backlink-location-function
+           #'zetteldeft-backlink-get-location
+ "Function to get location for new backlinks.
+The function should return a position in the current buffer.")
+#+end_src
+
+This function should return a position in the current buffer that will then be called with =goto-char=.
+
+Now for the default function.
+It indicates backlinks should be included at one of the following, if they exist:
+ - below an existing backlink,
+ - below the tag line,
+ - below the title,
+ - at top of the file.
+
+#+begin_src emacs-lisp
+(defun zetteldeft-backlink-get-location ()
+  "Default function that returns where a backlink should be added.
+
+This is the line below whichever is found first:
+ - existing backlink
+ - tag line
+ - title
+ - at top of file
+"
+  (interactive)
+  (save-excursion
+    (goto-char (point-min))
+      (cond
+        ((re-search-forward (regexp-quote zetteldeft-backlink-prefix) nil t)
+          (forward-line)
+          (point))
+        ((re-search-forward (regexp-quote zetteldeft-tag-line-prefix) nil t)
+          (forward-line)
+          (newline)
+          (point))
+        ((re-search-forward (regexp-quote zetteldeft-title-prefix) nil t)
+          (forward-line)
+          (newline)
+          (point))
+        (t (point-min)))))
+#+end_src
+
+We use this function to figure out where backlinks should go.
+The backlink appears on a new line.
 
 #+BEGIN_SRC emacs-lisp
 ;;;###autoload
@@ -826,28 +950,18 @@ ID and title on a new line."
     (completing-read "File to add backlink to: "
       (deft-find-all-files-no-prefix))))
   (save-excursion
-    (goto-char (point-min))
-    (when (re-search-forward
-            (regexp-quote zetteldeft-title-prefix) nil t))
-    (forward-line)
-    (insert zetteldeft-backlink-prefix
-            (concat zetteldeft-link-indicator
-                    (zetteldeft--lift-id file)
-                    zetteldeft-link-suffix
-                    " "
-                    (zetteldeft--lift-file-title
-                      (concat deft-directory file)))
-            "\n"))
+    (goto-char (funcall zetteldeft-backlink-location-function))
+    (insert zetteldeft-backlink-prefix)
+    (zetteldeft--insert-link
+      (zetteldeft--lift-id file)
+      (zetteldeft--lift-file-title (concat deft-directory file)))
+    (insert "\n"))
   (message "Backlink added."))
 #+END_SRC
 
-Potential enhancements include:
- - Check whether a backlink is already present and update it if so
- - More control over placement of backlink (rather than directly below title)
-
 **** =zetteldeft-find-file-full-title-insert= inserts id and title
 
-Select file from minibuffer and insert its link, prepended by =§= (or =zetteldeft-link-indicator=).
+Select file from minibuffer and insert a link to it, including th enote's title as description.
 
 Based on =deft-find-file=.
 
@@ -858,11 +972,9 @@ Based on =deft-find-file=.
   (interactive (list
     (completing-read "File to insert full title from: "
       (deft-find-all-files-no-prefix))))
-  (insert zetteldeft-link-indicator
-          (zetteldeft--lift-id file)
-          zetteldeft-link-suffix
-          " "
-          (zetteldeft--lift-file-title (concat deft-directory file))))
+  (zetteldeft--insert-link
+    (zetteldeft--lift-id file)
+    (zetteldeft--lift-file-title (concat deft-directory file))))
 #+END_SRC
 
 *** New file creation
@@ -889,13 +1001,22 @@ Additionally:
  - generate an ID (unless one is provided as optional argument)
  - insert a title in the newly created file, wrapped in =zetteldeft-title-prefix= and =zetteldeft-title-suffix=
  - when =evil= is loaded, enter the insert state
- - add a full link to the kill ring
+ - add the new filename to the kill ring (if =zetteldeft-new-filename-to-kill-ring= is nil)
 
 First, let's make sure =emacs= knows where to find =evil-insert-state=.
 
 #+BEGIN_SRC emacs-lisp
 (declare-function evil-insert-state "evil")
 #+END_SRC
+
+Next, the customization option to indicate whether the new filename should be added to the kill ring.
+
+#+begin_src emacs-lisp
+(defcustom zetteldeft-new-filename-to-kill-ring nil
+  "Add new filename to kill ring?"
+  :type 'boolean
+  :group 'zetteldeft)
+#+end_src
 
 Now for the function itself.
 
@@ -905,18 +1026,19 @@ Now for the function itself.
   "Create a new deft file.
 
 The filename is a Zetteldeft ID, appended by STR. The ID will be
-generated, unles ID is provided.
-A file title will be inserted in the newly created file wrapped in
-`zetteldeft-title-prefix' and `zetteldeft-title-suffix'. Filename
-(without extension) is added to the kill ring. When `evil' is loaded,
-change to insert state."
+generated, unless ID is provided. A file title will be inserted in the
+newly created file wrapped in `zetteldeft-title-prefix' and
+`zetteldeft-title-suffix'. When `zetteldeft-new-filename-to-kill-ring'
+is non-nil, the filename (without extension) is added to the kill
+ring. When `evil' is loaded, change to insert state."
   (interactive (list (read-string "Note title: ")))
   (let* ((deft-use-filename-as-title t)
          (zdId (or id
                    (zetteldeft-generate-id str)))
          (zdName (concat zdId zetteldeft-id-filename-separator str)))
   (deft-new-file-named zdName)
-  (kill-new zdName)
+  (when zetteldeft-new-filename-to-kill-ring
+    (kill-new zdName))
   (zetteldeft--insert-title str)
   (save-buffer)
   (when (featurep 'evil) (evil-insert-state))))
@@ -939,10 +1061,7 @@ The generated ID is passed to =zetteldeft-new-file=.
 Similar to `zetteldeft-new-file', but insert a link to the new file."
   (interactive (list (read-string "Note title: ")))
   (let ((zdId (zetteldeft-generate-id str)))
-    (insert zetteldeft-link-indicator
-            zdId
-            zetteldeft-link-suffix
-            " " str)
+    (zetteldeft--insert-link zdId str)
     (zetteldeft-new-file str zdId)))
 #+END_SRC
 
@@ -963,42 +1082,75 @@ Store a link, generate a new one, and we're done.
   (interactive (list (read-string "Note title: ")))
   (let ((ogId (zetteldeft--current-id))
         (zdId (zetteldeft-generate-id str)))
-    (insert zetteldeft-link-indicator
-            zdId
-            zetteldeft-link-suffix
-            " " str)
+    (zetteldeft--insert-link zdId str)
     (zetteldeft-new-file str zdId)
     (newline)
-    (insert zetteldeft-backlink-prefix
-            zetteldeft-link-indicator
-            ogId
-            zetteldeft-link-suffix
-            " "
-            (zetteldeft--id-to-title ogId))))
+    (zetteldeft--insert-link ogId (zetteldeft--id-to-title ogId))))
+#+END_SRC
+
+**** =zetteldeft-extract-region-to-note= creates new note from a region
+
+Highlight a region of an existing note and call =zetteldeft-extract-region-to-note= to extract the region into a new note.
+
+This function will prompt for a title.
+Once entered, a new note is created with that title and the highlighted region as its content.
+The original highlighted region will be replaced with a link to this new note.
+As with other link insertions, the format of this link can be customized through the =zetteldeft-insert-link-function= variable.
+
+#+BEGIN_SRC emacs-lisp
+(defun zetteldeft-extract-region-to-note (title)
+  "Extract the marked region to a new note with TITLE."
+  (interactive (list (if (not (use-region-p))
+                         (user-error "No region active.")
+                     (read-string "Note title: "))))
+  (let* ((id (zetteldeft-generate-id title))
+         (text (kill-region (region-beginning) (region-end))))
+    (save-excursion
+      (zetteldeft-new-file title id)
+      (yank)
+      (save-buffer))
+    (zetteldeft--insert-link id title)))
 #+END_SRC
 
 *** Moving around with =avy=
 **** Following links with =zetteldeft-follow-link=
 
 This is a wrapper function to follow links to a file.
-When point is in a link, open the note it links to.
-When point is not in a link, call =avy= to jump to and open a selected link.
+When point is in a link, open the note it links to (unless =zetteldeft-follow-at-point= is =nil=).
+Otherwise, call =avy= to jump to and open a selected link.
 
 #+BEGIN_SRC emacs-lisp
 ;;;###autoload
 (defun zetteldeft-follow-link ()
   "Follows zetteldeft link to a file if point is on a link.
-Prompts for a link to follow with `zetteldeft-avy-file-search' if it isn't."
+Uses Avy to prompt for a link to follow with `zetteldeft-avy-file-search'
+if it isn't. Variable `zetteldeft-follow-at-point' controls this last
+option: when nil, always use Avy."
   (interactive)
-  (if (thing-at-point-looking-at (zetteldeft--link-regex))
+  (if (and zetteldeft-follow-at-point
+           (thing-at-point-looking-at (zetteldeft--link-regex)))
       (zetteldeft--search-filename
         (zetteldeft--lift-id (zetteldeft--get-thing-at-point)))
     (zetteldeft-avy-file-search)))
 #+END_SRC
 
+A little boolean that allows customization whether =zetteldeft-follow-link= should automatically open links at point.
+Set this to =nil= to always select a link with =avy=.
+
+#+BEGIN_SRC emacs-lisp
+(defcustom zetteldeft-follow-at-point t
+  "Should `zetteldeft-follow-link' open link at point?
+When t, open note at point if point is on a link.
+When nil, always use Avy."
+  :type 'boolean
+  :group 'zetteldeft)
+#+END_SRC
+
 **** Repeat following with =zetteldeft-browse=
 
 A function to conveniently browse notes: keep on jumping from note to note.
+Meanwhile use keys such as =.=, =<= and =>= to go to the home note, previous buffer or next buffer.
+All while you keep browsing and following links.
 
 Since =avy-jump= returns =t= after each succesful jump (and =zetteldeft-avy-file-search= passes this on), we can use it in a loop.
 
@@ -1008,12 +1160,62 @@ Since =avy-jump= returns =t= after each succesful jump (and =zetteldeft-avy-file
   "Browse your notes with avy.
 Keep calling `zetteldeft-avy-file-search' in a loop."
   (interactive)
-  (let ((avy-single-candidate-jump nil))
+  (let ((avy-single-candidate-jump nil)
+        (avy-handler-function 'zetteldeft--browse-avy-handler))
     (while (zetteldeft-avy-file-search)
-      (message "Browsing in Zetteldeft!"))))
+      (message "Browsing in Zetteldeft!   [.] home   [<] prev   [>] next"))))
 #+end_src
 
-Setting =avy-single-candidate-jump= to nil ensures unexpected jumps when there's only one Zetteldeft link candidate on screen.
+Setting =avy-single-candidate-jump= to nil prevents unexpected jumps when there's only one Zetteldeft link candidate on screen.
+
+Now let's add some custom keys to the default =avy= setup.
+
+For reference, here are some notes on how =avy= works:
+- The variable =avy-dispatch-alist= lists actions of what to do when a key not on =avy-keys= is pressed during dispatch.
+  The provided action is what is executed once a candidate is finaly pressed.
+- The =avy-handler-default= function processes bad read keys.
+  Changed with the variable =avy-handler-function=.
+
+So, let's define a separate handler which is used in the browse function above.
+Based on the default handler function.
+
+#+begin_src emacs-lisp
+(defun zetteldeft--browse-avy-handler (char)
+  "The default handler for a bad CHAR."
+  (let (dispatch)
+    (cond ((setq dispatch (assoc char avy-dispatch-alist))
+           (unless (eq avy-style 'words)
+             (setq avy-action (cdr dispatch)))
+           (throw 'done 'restart))
+          ((memq char avy-escape-chars)
+           ;; exit silently
+           (throw 'done 'abort))
+          ;; Go to home note
+          ((eq char ?.)
+           (zetteldeft-go-home)
+           (message "Brwosing to home note.")
+           (zetteldeft-browse)
+           (throw 'done 'abort))
+          ;; Previous buffer
+          ((eq char ?<)
+           (previous-buffer)
+           (message "Browsing to previous buffer.")
+           (zetteldeft-browse)
+           (throw 'done 'abort))
+          ((eq char ?>)
+           (next-buffer)
+           (message "Browsing to next buffer.")
+           (zetteldeft-browse)
+           (throw 'done 'abort))
+          ((eq char ??)
+           (avy-show-dispatch-help)
+           (throw 'done 'restart))
+          ((mouse-event-p char)
+           (signal 'user-error (list "Mouse event not handled" char)))
+          (t
+           (message "No such candidate: %s, hit `C-g' to quit."
+                    (if (characterp char) (string char) char))))))
+#+end_src
 
 **** =zetteldeft-avy-tag-search= selects and searches tags with =avy=
 
@@ -1155,10 +1357,7 @@ Now for the function itself.
       (insert (format " - %s in: " link))
       (deft-filter link t)
       (dolist (source (deft-current-files))
-        (insert (format "%s%s%s "
-                        zetteldeft-link-indicator
-                        (zetteldeft--lift-id source)
-                        zetteldeft-link-suffix)))
+        (zetteldeft--insert-link (zetteldeft--lift-id source)))
       (insert "\n")))
   (unless (eq major-mode 'org-mode) (org-mode)))
 #+end_src
@@ -1457,7 +1656,144 @@ The ID should lead to only one file, obviously, so an error is thrown when this 
     (zetteldeft--id-to-full-path zdId)))
 #+END_SRC
 
-** Listing all tags
+** Tags
+*** A note on tags
+
+Tags are a way to quickly retrieve a subsection of notes.
+To quickly insert a tag, use =zetteldeft-tag-insert=: it will prompt for a tag to be added at the end of the first line that starts with =zetteldeft-tag-line-prefix=.
+If, however, this variable is set to =nil=, tags will be inserted at point.
+Want to insert a tag at point even with =zetteldeft-tag-line-prefix= configured?
+Use =zetteldeft-tag-insert-at-point=.
+
+Note: variable =zetteldeft-tag-regex= is used to /find/ tags, =zetteldeft-tag-prefix= for /inserting/ tags.
+To fully customize tag searching and inserting behaviour to your liking, you might have to modify both.
+
+*** =zetteldeft-tag-regex= for finding tags
+
+This regular expression indicates what tags can look like so that they can be found.
+
+By default, tags start with a =#= or =@= and contain least one or more lower case letters.
+Dashes are allowed.
+
+#+BEGIN_SRC emacs-lisp
+(defcustom zetteldeft-tag-regex "[#@][[:alnum:]_-]+"
+  "Regular expression for finding Zetteldeft tags."
+  :type 'string
+  :group 'zetteldeft)
+#+END_SRC
+
+Note that this regular may trip over =#= symbols used in URLS.
+
+*** =zetteldeft-tag-prefix= for inserting tag
+
+Newly created Zetteldeft tags start with a =#= by default, but this can be customized.
+
+Note that this (currently) only affects how tags are /inserted/ via =zetteldeft-tag-insert= -- it doesn't change which tags are /found/.
+
+#+BEGIN_SRC emacs-lisp
+(defcustom zetteldeft-tag-prefix "#"
+  "String prefix used when inserting new Zetteldeft tags."
+  :type 'string
+  :group 'zetteldeft)
+#+END_SRC
+
+*** =zetteldeft-tag-line-prefix= indicates where tags go
+
+A string indicating the line where newly added tags should go.
+Tags are added at the end of the first line that matches this string.
+
+#+BEGIN_SRC emacs-lisp
+(defcustom zetteldeft-tag-line-prefix "# Tags"
+  "String used to find the line where tags in Zetteldeft files should go."
+  :type 'string
+  :group 'zetteldeft)
+#+END_SRC
+
+*** =zetteldeft-tag-insert-at-point= inserts tag here
+
+Insert a Zetteldeft tag at point.
+When called interactively, prompt user to select a tag from the list of existing tags (or enter a new tag).
+
+#+begin_src emacs-lisp
+;;;###autoload
+(defun zetteldeft-tag-insert-at-point (tag)
+  "Insert TAG at point. Interactively, select an existing tag or provide new one."
+  (interactive (list (completing-read
+                        "Tag to insert: "
+                        (zetteldeft--get-all-sorted-tags))))
+  (unless (string-prefix-p zetteldeft-tag-prefix tag)
+    (insert zetteldeft-tag-prefix))
+  (insert tag))
+#+end_src
+
+The =unless= ensures that a newly entered tag includes the tag prefix.
+
+*** =zetteldeft-tag-insert= to insert tag at tag line
+
+Append a Zetteldeft tag to the tag line (or, when the tag line isn't found, insert it at point).
+The tag line is the first line that starts with =zetteldeft-tag-line-prefix=.
+The user is prompted to select a tag from the list of existing tags, or enter a new one.
+
+To always insert tag at point, set =zetteldeft-tag-line-prefix= to nil.
+
+#+BEGIN_SRC emacs-lisp
+;;;###autoload
+(defun zetteldeft-tag-insert ()
+  "Select existing tag or enter new one to insert in current Zetteldeft note.
+
+The tag is appended to the first line starting with `zetteldeft-tag-line-prefix'.
+If this variable is nil, or tag line is not found, insert tag at point."
+  (interactive)
+  (zetteldeft--check)
+  (let ((dest (when zetteldeft-tag-line-prefix
+                (save-excursion
+                  (goto-char (point-min))
+                  (re-search-forward zetteldeft-tag-line-prefix nil t)))))
+    (if dest
+        (save-excursion 
+          (goto-char dest)
+          (end-of-line)
+          (insert " ")
+          (call-interactively 'zetteldeft-tag-insert-at-point))
+      (call-interactively 'zetteldeft-tag-insert-at-point))))
+#+END_SRC
+
+*** =zetteldeft-tag-remove= to remove tag from current note
+
+Easily remove a tag from the currently visited note.
+Prompt for a tag via =completing-read= and remove the /first/ instance of it.
+
+Steps:
+ 1. Get tags in current buffer
+ 2. Select one of these tags
+ 3. Search buffer for tag string
+ 4. Delete first instance of found tag (including potential space before)
+
+#+begin_src emacs-lisp
+(defun zetteldeft-tag-remove ()
+  "Prompt for a tag to remove from the current Zetteldeft note.
+Only the first instance of the selected tag is removed."
+  (interactive)
+  (zetteldeft--check)
+  ; Extract tags of current file into `zetteldeft--tag-list'
+  (setq zetteldeft--tag-list (list))
+  (save-buffer)
+  (zetteldeft--extract-tags (buffer-file-name))
+  ; Select a tag from that list
+  (let* ((tag (completing-read
+                "Tag to remove: "
+                (seq-filter 'stringp zetteldeft--tag-list))))
+    ; Find and remove first instance of that tag
+    (save-excursion
+      (goto-char (point-min))
+      (re-search-forward tag nil t)
+      (delete-region (point) (re-search-backward tag nil t))
+      ; remove potential empty space before tag
+      (backward-char)
+      (when (looking-at " ") (delete-char 1)))))
+#+end_src
+
+*** Listing all tags
 :PROPERTIES:
 :CUSTOM_ID: list-tags
 :END:
@@ -1466,7 +1802,7 @@ Let's display all tags in Zetteldeft.
 
 With =zetteldeft-tag-buffer= they are all gathered in a buffer, including how often they appear.
 
-*** =zetteldeft-tag-buffer= puts all tags in a buffer
+**** =zetteldeft-tag-buffer= puts all tags in a buffer
 
 The name of the buffer we'll be using:
 
@@ -1497,13 +1833,14 @@ It works like so:
                         zdTag
                         (lax-plist-get tagList zdTag)))))
     (unless (eq major-mode 'org-mode) (org-mode))
-    (sort-lines nil (point-min) (point-max))))
+    (sort-lines nil (point-min) (point-max))
+    (goto-char (point-min))))
 #+END_SRC
 
 Note: the =zetteldeft--get-all-tags= returns a property list, with alternating tags (i.e., a string) and how often they appear (i.e., a number).
 To only act on the strings, we use a =when (stringp zdTag)=.
 
-*** =zetteldeft--get-all-tags= lists all tags
+**** =zetteldeft--get-all-tags= lists all tags
 
 First, we need a variable to store the tags in.
 
@@ -1526,11 +1863,23 @@ Extracting tags with =zetteldeft--extract-tags=.
   zetteldeft--tag-list)
 #+END_SRC
 
-*** Tag extracting functions
+**** =zetteldeft--get-all-sorted-tags= lists all sorted tags
+
+An expansion of the previous function, which ensures found tags are sorted.
+
+#+BEGIN_SRC emacs-lisp
+(defun zetteldeft--get-all-sorted-tags ()
+  "Return a sorted plist of all the tags found in zetteldeft files."
+  (seq-sort 'string-lessp
+            (seq-filter 'stringp
+                        (zetteldeft--get-all-tags))))
+#+END_SRC
+
+**** Tag extracting functions
 
 Some utility functions to achieve all of this.
 
-**** =zetteldeft--tag-format= adjusts the tag finding regex
+***** =zetteldeft--tag-format= adjusts the tag finding regex
 
 The regular expression used to filter out tags, =zetteldeft-tag-regex= works, but doesn't filter strictly enough.
 Hashtags used in URLs are also found, for example.
@@ -1546,7 +1895,7 @@ That's why we can make the existing regex more precise by stating that tags shou
 This means that search results now (could) include a space in front of the tag.
 These spaces are removed in the =zetteldeft--extract-tags= function, when adding the found tags to the tag buffer.
 
-**** =zetteldeft--extract-tags= from a file
+***** =zetteldeft--extract-tags= from a file
 
 To extract tags from a single file:
  1. Open a given file in a temporary buffer.
@@ -1568,7 +1917,7 @@ Increase counters as we go."
       (delete-region (point) (re-search-backward (zetteldeft--tag-format))))))
 #+END_SRC
 
-**** =zetteldeft--tag-count= increases count of a tag in plist
+***** =zetteldeft--tag-count= increases count of a tag in plist
 
 Check if a provided tag is already in the tag property list.
 If it isn't add it and set counter to 1.
@@ -1585,6 +1934,232 @@ If it is, increase its counter.
       (setq zetteldeft--tag-list
         (lax-plist-put zetteldeft--tag-list zdTag 1)))))
 #+end_src
+
+** List of links
+:PROPERTIES:
+:CUSTOM_ID: list-links
+:END:
+:toc:
+
+In this section:
+#+TOC: headlines 2 local
+
+:end:
+*** A list of links
+
+Sometimes you want to easily gather all notes with a certain tag or search term.
+This is an important step in creating structure in your notes.
+Zetteldeft can generate a such "list of links".
+
+There are two types of list of links:
+ - Plain list of notes with a specific search term, listing both ID and note title for each one.
+   Such a list can be generated with =zetteldeft-insert-list-links=.
+ - Same as the above, but only listing IDs /missing/ from the current note.
+   In other words, the list won't include link to notes that are already linked to from the current buffer.
+   Generated via =zetteldeft-insert-list-links-missing=.
+
+To make their use more convenient, these functions can be called from an Org-mode source block.
+This is the real front-end use of this feature.
+
+To easily insert such a block, use =zetteldeft-insert-list-links-block=.
+The resulting code looks something like this:
+
+#+begin_example org
+#+BEGIN_SRC emacs-lisp :results silent
+(zetteldeft-list-links "#zd-tutorial")
+#+END_SRC
+
+ - §2021-04-03-2209 Turn org subheading into a new note
+ - §2021-03-29-2226 Tags in Zetteldeft
+ - §2020-11-13-2140 Creating useful links
+ - §2020-10-24-2304 The Zetteldeft Philosphy
+ - §2020-10-06-1014 Exporting with org-publish
+ - §2020-09-22-0855 Backlinks
+ - §2020-09-20-2106 The home note
+#+end_example
+
+Hitting =C-c C-c= in the source block updates the list below the block.
+Additional arguments to the =zetteldeft-list-links= function limit the missing links and sorting of the list.
+
+*** Generating a list of links
+**** =zetteldeft-insert-list-links= generates list with tagged files
+
+Creates and inserts a list with links to all files with selected search term.
+
+The code gets a list of files that contain the search string, runs through said list and inserts a link for each entry.
+
+When called from a note within zetteldeft, exclude the note itself from the generated list.
+This is necessary so that when called from an =org= code block within a note, the note itself is not included (since it will be found by =deft=, as the search string will be part of that note).
+To achieve this, get the full file name of the current buffer, and remove it from the search results if its found there.
+The =when= part is there so that this deletion is not attempted if the current buffer is not visiting a file.
+
+#+BEGIN_SRC emacs-lisp
+;;;###autoload
+(defun zetteldeft-insert-list-links (string)
+  "Search for SEARCH-STRING and insert list of links to results."
+  (interactive (list (read-string "search string: ")))
+  (let ((result-files (zetteldeft--get-file-list string))
+        (this-file (buffer-file-name)))
+    (when this-file
+      (setq result-files (delete this-file result-files)))
+    (dolist (file result-files)
+      (zetteldeft--list-entry-file-link file))))
+#+END_SRC
+
+**** =zetteldeft-insert-list-links-missing= generates list with new links
+
+Does the same as the above function, but only inserts IDs that aren't already present in the current file.
+In contrast with =zetteldeft-insert-list-links=, this function can only be used from within a zetteldeft note.
+
+When no missing links are found, i.e. all the notes with the provided strings are already linked to in the current note, a message is printed instead.
+To be able to customize this message, include a =defcustom=.
+
+#+BEGIN_SRC emacs-lisp
+(defcustom zetteldeft-list-links-missing-message
+  "   No missing links with search term =%s= found\n"
+  "Message to insert when no missing links are found.
+This is used by `zetteldeft-insert-list-links-missing'.
+%s will be replaced by the search term provided to
+this function."
+  :type 'string
+  :group 'zetteldeft)
+#+END_SRC
+
+Including missing links is especially handy when you want to check whether all notes with a certain tag are mentioned in a note, or simply to list notes with a specific tag that are not linked to yet (in the current note).
+Similar to the function above, filter out ID of the current note.
+In contrast to the function above, this one works with IDs rather than full paths.
+
+A fundamental *shortcoming* of this piece of code, is that after it is executed, the note now includes the previously missing ID links, which in turn means that on the next run /no/ links will be included...
+The most immediate solution is for the user to be wary of this, remove any previously inserted links, save the buffer and refresh the deft cache with =deft-refresh= before calling this function.
+
+#+BEGIN_SRC emacs-lisp
+;;;###autoload
+(defun zetteldeft-insert-list-links-missing (string)
+  "Insert a list of links to all deft files with a search string ZDSRCH.
+In contrast to `zetteldeft-insert-list-links' only include links not
+yet present in the current file. Can only be called from a file in the
+zetteldeft directory."
+  (interactive (list (read-string "Search string: ")))
+  (zetteldeft--check)
+  (let (this-id     ; ID of current file
+        current-ids ; IDs present in current buffer
+        found-ids   ; IDs of notes with search result
+        final-ids)  ; Final list of IDs for the list
+    ;; Gather list of IDs in current buffer
+    (setq current-ids (zetteldeft--extract-links (buffer-file-name)))
+    ;; Execute search and push found IDs to temporary list
+    (dolist (file (zetteldeft--get-file-list string))
+      (push (zetteldeft--lift-id file) found-ids))
+    ;; Keep only unique IDs on the final list
+    (dolist (id found-ids)
+      (unless (member id current-ids)
+        (push id final-ids)))
+    ;; Remove the ID of the current buffer from the final list
+    (setq this-id (zetteldeft--lift-id (file-name-base (buffer-file-name))))
+    (setq final-ids (delete this-id final-ids))
+    ;; Finally insert ID and title for each element on the list
+    (if final-ids
+        (dolist (id final-ids)
+          (zetteldeft--list-entry-file-link (zetteldeft--id-to-full-path id)))
+      ;; Unless the list is empty, then insert a message
+      (insert (format zetteldeft-list-links-missing-message string)))))
+#+END_SRC
+
+The final =dolist= contains some ugliness to make things work with =zetteldeft-link-suffix=, in order to get the note's title without the link in it.
+Might need to be fixed sometime.
+
+**** =zetteldeft-list-prefix= to customize the list markup for list items
+
+To define what a list entry looks like, let's create a customizeable string.
+It determines the list markup.
+
+#+BEGIN_SRC emacs-lisp
+(defcustom zetteldeft-list-prefix " - "
+  "Prefix for lists created with `zetteldeft-insert-list-links'
+and `zetteldeft-insert-list-links-missing'."
+  :type 'string
+  :group 'zetteldeft)
+#+END_SRC
+
+**** =zetteldeft--list-entry-file-link= includes a file link as list entry
+
+Inserts for given file a link id and title as a list entry.
+
+Only attempt to insert the ID if one is found.
+When there isn't (for example when the filename somehow doesn't contain an ID), don't try to insert it or we'll get an error.
+
+#+BEGIN_SRC emacs-lisp
+(defun zetteldeft--list-entry-file-link (file)
+  "Insert ZDFILE as list entry."
+  (let ((id (zetteldeft--lift-id (file-name-base file))))
+    (insert zetteldeft-list-prefix)
+    (when id
+          (insert zetteldeft-link-indicator
+                  id
+                  zetteldeft-link-suffix
+                  " "))
+    (insert (zetteldeft--lift-file-title file)
+            "\n")))
+#+END_SRC
+
+*** Semi-automated list of links from an Org source block
+**** =zetteldeft-list-links= to be called from block
+
+The following function is meant to be called from an Org source block.
+It updates the list below the source block with a new list of links.
+
+The two optional arguments allow to only include missing links, and to sort the resulting list via =org-sort-list=.
+
+#+BEGIN_SRC emacs-lisp
+(defun zetteldeft-list-links (str &optional missing sort)
+  "Crude attempt to automate `zetteldeft-insert-list-links-missing'.
+Meant to be called from an Org source block.
+Replaces the list below the source block.
+When MISSING is t, use `zetteldeft-insert-list-links-missing'.
+When SORT is t, sort the list with most recent at top."
+  (save-excursion
+    (org-forward-element)
+    ; Delete any existing list
+    (when (org-in-item-p)
+      (delete-region (point) (org-end-of-item-list)))
+    ; New line & insert links
+    (if missing
+        (progn (save-buffer)
+               (deft-refresh)
+               (zetteldeft-insert-list-links-missing str))
+      (zetteldeft-insert-list-links str))
+    (when sort
+      (org-backward-element)
+      (org-sort-list t ?A))))
+#+END_SRC
+
+**** =zetteldeft-insert-list-links-block= inserst code block
+
+Let's also automate the insertion of such a code block.
+This function inserts both the block and the list of links.
+When called with a prefix, use the "missing"-verion of the list of links.
+
+#+BEGIN_SRC emacs-lisp :results silent
+(defun zetteldeft-insert-list-links-block (str)
+  "Prompt for a STR to search, and insert an org-mode
+source block that calls `zetteldeft-list-links'.
+Also include the list of links below the block.
+When called with a prefix, make use of the missing links
+functions."
+  (interactive
+    (list (read-string "Search: ")))
+  (newline)
+  (insert "#+BEGIN_SRC emacs-lisp :results silent\n"
+          "(zetteldeft-list-links \"" str"\"")
+  (when current-prefix-arg (insert " t"))
+  (insert ")\n"
+          "#+END_SRC\n\n")
+  (if current-prefix-arg
+      (progn (save-buffer)
+             (deft-refresh)
+             (zetteldeft-insert-list-links-missing str))
+    (zetteldeft-insert-list-links str)))
+#+END_SRC
 
 ** Exporting with Org-mode
 
@@ -1718,135 +2293,13 @@ In this section:
 :end:
 *** On "gathering notes"
 
-Sometimes you want to easily gather all notes with a certain tag or search term.
-Say you want to quickly generate a list of links to all files including the tag =#zetteldeft=.
+Let's say you want to generate a single Org document containing all notes with a specific tag (or other search term).
 
-The following functions do that for you.
-There are three of them, each either taking a search term as argument or prompting for one:
- 1. =zetteldeft-insert-list-links= inserts a simple list of notes which contain the search term, spelling out the full filename for each note (including ID).
- 2. =zetteldeft-org-search-include= generates =org-mode= syntax to =#+INCLUDE= the files below a header with their title.
- 3. =zetteldeft-org-search-insert= inserts the contents of all of these notes below their respective titles.
+There are two functions to achieve this:
+ 1. Directly copying the content: =zetteldeft-org-search-insert= inserts the contents of all of these notes below their respective titles.
+ 2. Using Org-mode =#+INCLUDE= syntax: =zetteldeft-org-search-include= generates =org-mode= syntax to =#+INCLUDE= the files.
 
-More documentation can be found below.
-    
-*** List of links
-**** =zetteldeft-insert-list-links= generates list with tagged files
-
-Creates and inserts a list with links to all files with selected search term.
-
-The code gets a list of files that contain the search string, runs through said list and inserts a link for each entry.
-
-When called from a note within zetteldeft, exclude the note itself from the generated list.
-This is necessary so that when called from an =org= code block within a note, the note itself is not included (since it will be found by =deft=, as the search string will be part of that note).
-To achieve this, get the full file name of the current buffer, and remove it from the search results if its found there.
-The =when= part is there so that this deletion is not attempted if the current buffer is not visiting a file.
-
-#+BEGIN_SRC emacs-lisp
-;;;###autoload
-(defun zetteldeft-insert-list-links (zdSrch)
-  "Search for ZDSRCH and insert a list of zetteldeft links to all results."
-  (interactive (list (read-string "search string: ")))
-  (let ((zdResults (zetteldeft--get-file-list zdSrch))
-        (zdThisNote (buffer-file-name)))
-    (when zdThisNote (setq zdResults (delete zdThisNote zdResults)))
-    (dolist (zdFile zdResults)
-      (zetteldeft--list-entry-file-link zdFile))))
-#+END_SRC
-
-**** =zetteldeft-insert-list-links-missing= generates list with new links
-
-Does the same as the above function, but only inserts IDs that aren't already present in the current file.
-In contrast with =zetteldeft-insert-list-links=, this function can only be used from within a zetteldeft note.
-
-When no missing links are found, i.e. all the notes with the provided strings are already linked to in the current note, a message is printed instead.
-To be able to customize this message, include a =defcustom=.
-
-#+BEGIN_SRC emacs-lisp
-(defcustom zetteldeft-list-links-missing-message
-  "   No missing links with search term =%s= found\n"
-  "Message to insert when no missing links are found.
-This is used by `zetteldeft-insert-list-links-missing'.
-%s will be replaced by the search term provided to
-this function."
-  :type 'string
-  :group 'zetteldeft)
-#+END_SRC
-
-Including missing links is especially handy when you want to check whether all notes with a certain tag are mentioned in a note, or simply to list notes with a specific tag that are not linked to yet (in the current note).
-Similar to the function above, filter out ID of the current note.
-In contrast to the function above, this one works with IDs rather than full paths.
-
-A fundamental *shortcoming* of this piece of code, is that after it is executed, the note now includes the previously missing ID links, which in turn means that on the next run /no/ links will be included...
-The most immediate solution is for the user to be wary of this, remove any previously inserted links, save the buffer and refresh the deft cache with =deft-refresh= before calling this function.
-
-#+BEGIN_SRC emacs-lisp
-;;;###autoload
-(defun zetteldeft-insert-list-links-missing (zdSrch)
-  "Insert a list of links to all deft files with a search string ZDSRCH.
-In contrast to `zetteldeft-insert-list-links' only include links not
-yet present in the current file. Can only be called from a file in the
-zetteldeft directory."
-  (interactive (list (read-string "search string: ")))
-  (zetteldeft--check)
-  (let (zdThisID zdCurrentIDs zdFoundIDs zdFinalIDs)
-    (setq zdCurrentIDs (zetteldeft--extract-links (buffer-file-name)))
-    ;; filter IDs from search results
-    (dolist (zdFile (zetteldeft--get-file-list zdSrch))
-      (push (zetteldeft--lift-id zdFile) zdFoundIDs))
-    ;; create new list with unique ids
-    (dolist (zdID zdFoundIDs)
-      (unless (member zdID zdCurrentIDs)
-        (push zdID zdFinalIDs)))
-    ;; remove the ID of the current buffer from said list
-    (setq zdThisID (zetteldeft--lift-id (file-name-base (buffer-file-name))))
-    (setq zdFinalIDs (delete zdThisID zdFinalIDs))
-    ;; finally find full title for each ID and insert it
-    (if zdFinalIDs
-        (dolist (zdID zdFinalIDs)
-          (insert " - "
-                  zetteldeft-link-indicator
-                  zdID
-                  zetteldeft-link-suffix
-                  " "
-                  (zetteldeft--id-to-title zdID)
-                  "\n"))
-      ;; unless the list is empty, then insert a message
-      (insert (format zetteldeft-list-links-missing-message zdSrch)))))
-#+END_SRC
-
-The final =dolist= contains some ugliness to make things work with =zetteldeft-link-suffix=, in order to get the note's title without the link in it.
-Might need to be fixed sometime.
-
-**** =zetteldeft-list-prefix= prefix variable for list items
-
-To define what a list entry looks like, let's create a customizeable string.
-
-#+BEGIN_SRC emacs-lisp
-(defcustom zetteldeft-list-prefix " - "
-  "Prefix for lists created with `zetteldeft-insert-list-links'
-and `zetteldeft-insert-list-links-missing'."
-  :type 'string
-  :group 'zetteldeft)
-#+END_SRC
-**** =zetteldeft--list-entry-file-link= includes a file link as list entry
-
-Inserts for given file a link id and title as a list entry.
-
-#+BEGIN_SRC emacs-lisp
-(defun zetteldeft--list-entry-file-link (zdFile)
-  "Insert ZDFILE as list entry."
-  (insert zetteldeft-list-prefix
-          zetteldeft-link-indicator
-          (zetteldeft--lift-id (file-name-base zdFile))
-          zetteldeft-link-suffix
-          " "
-          (zetteldeft--lift-file-title zdFile)
-          "\n"))
-#+END_SRC
-
-*** Compiling a single =org=
-**** Idea and example
-***** Including notes with given search term
+**** Including notes with given search term with =zetteldeft-org-search-include=
 
 The following explains what =zetteldeft-org-search-include= does, but the concept is more or less the same for =zetteldeft-org-search-insert=.
 
@@ -1874,7 +2327,7 @@ The results would look like the following:
 
 All functions are documented below.
 
-***** Semi-automated example
+**** Semi-automated example
 
 You could, for example, add the following code to a document and execute (or evaluate) it from within =org-mode=.
 Add it under a "comment" type heading to prevent it from being exported itself, like so: =* COMMENT Code=.
@@ -1901,7 +2354,7 @@ In order to also sort the entries alphabetically, uncomment the last two lines.
 
 A final caveat: don't put the file with the above code in you =deft= folder, or it will attempt to include itself (since it has =#tag= in it).
 
-***** Issues & things to note
+**** Issues & things to note
 
 Before we look at the functions, a note on limitations of the current implementation.
 
@@ -1920,7 +2373,7 @@ Before we look at the functions, a note on limitations of the current implementa
    Attempts at sorting by title are included in =zetteldeft--get-file-list=, but not working properly.
    As a solution, use =org-sort= manually after running =zetteldeft-org-search-include=.
 
-**** =zetteldeft-org-search-include= generates =#+INCLUDE= syntax
+*** =zetteldeft-org-search-include= generates =#+INCLUDE= syntax
 
 Asks user for a search string and inserts headers and =#+INCLUDE= code for all files with said tag.
 When used on =#tag=, make sure to include the =#= manually.
@@ -1935,7 +2388,7 @@ Prompt for search string when called interactively."
     (zetteldeft--org-include-file zdFile)))
 #+END_SRC
 
-**** =zetteldeft-org-search-insert= generates titles & file content
+*** =zetteldeft-org-search-insert= generates titles & file content
 
 Very similar to the previous function, but rather than writing syntax to include files, insert their contents directly.
 
@@ -2026,7 +2479,7 @@ The resulting graph looks something like this:
 [[./img/zetteldeft-graph.jpg]]
 
 It's worth noting, again, that this is very provisional.
- 
+
 *** Customizable elements
 
 We begin by setting up some customizable parts: syntax that should go at the start and the end of the =org-mode= source blocks that will be generated.
@@ -2253,7 +2706,9 @@ Other setups, for =evil= or =spacemacs=, are suggested in section [[#suggested-k
   (global-set-key (kbd "C-c d B") 'zetteldeft-new-file-and-backlink)
   (global-set-key (kbd "C-c d b") 'zetteldeft-backlink-add)
   (global-set-key (kbd "C-c d r") 'zetteldeft-file-rename)
-  (global-set-key (kbd "C-c d x") 'zetteldeft-count-words))
+  (global-set-key (kbd "C-c d x") 'zetteldeft-count-words)
+  (global-set-key (kbd "C-c d #") 'zetteldeft-tag-insert)
+  (global-set-key (kbd "C-c d $") 'zetteldeft-tag-remove))
 #+END_SRC
 
 ** End of package
@@ -2305,7 +2760,10 @@ Calling =zetteldeft-set-classic-keybindings= will set the following (see [[#kb-d
 | =C-c d F=     | =zetteldeft-avy-file-search-ace-window=  |
 | =C-c d h=     | =zetteldeft-go-home=                     |
 | =C-c d l=     | =zetteldeft-avy-link-search=             |
+| =C-c d L=     | =zetteldeft-insert-list-links-block=     |
 | =C-c d t=     | =zetteldeft-avy-tag-search=              |
+| =C-c d #=     | =zetteldeft-tag-insert=                  |
+| =C-c d $=     | =zetteldeft-tag-remove=                  |
 | =C-c d T=     | =zetteldeft-tag-buffer=                  |
 | =C-c d /=     | =zetteldeft-search-tag=                  |
 | =C-c d i=     | =zetteldeft-find-file-id-insert=         |
@@ -2343,8 +2801,11 @@ It relies on =general.el= for modal editing with =evil= and configures =deft= an
   "d." '(zetteldeft-browse :wk "browse")
   "dh" '(zetteldeft-go-home :wk "go home")
   "dl" '(zetteldeft-avy-link-search :wk "avy link search")
+  "dL" '(zetteldeft-insert-list-links-block :wk "insert list of links")
   "dt" '(zetteldeft-avy-tag-search :wk "avy tag search")
   "dT" '(zetteldeft-tag-buffer :wk "tag list")
+  "d#" '(zetteldeft-tag-insert :wk "insert tag")
+  "d$" '(zetteldeft-tag-remove :wk "remove tag")
   "d/" '(zetteldeft-search-tag :wk "search tag")
   "di" '(zetteldeft-find-file-id-insert :wk "insert id")
   "dI" '(zetteldeft-find-file-full-title-insert :wk "insert full title")
@@ -2478,6 +2939,15 @@ Its original value was =\\([\n ]\\|^#\\+[[:upper:]_]+:.*$\\)=.
 
 An overview of changes, in addition to those mentioned at the top of this document:
 
+ - *30 Dec 2020*: Renaming notes will now insert a title if there is none, thanks to jeffvalk
+ - *26 Nov*: Add =zetteldeft-search-tag=, thanks to maw.
+ - *07 Oct*: Add =zetteldeft-dead-links-buffer= to show dead links.
+ - *06 Oct*: Add export functionality.
+ - *20 Sep*: Add =zetteldeft-go-home=.
+ - *19 Sep*: Throw error when generated IDs are not unique.
+ - *21 Aug*: Add =zetteldeft-new-file-and-backlink= to create new notes.
+ - *20 Aug*: Update =zetteldeft-tag-buffer= to include tag frequency.
+ - *23 July*: Add customizable =zetteldeft-custom-id-function= for ID generation.
  - *08 July*: Add =ace-window= as top level requirement.
  - *06 July*: Separate filename from title and respect =deft-file-naming-rules=, thanks to PR by natdash.
  - *04 June*: Change =zetteldeft-new-file-and-link= so that it doesn't generate an ID. Change =zetteldeft-new-file= so that it can take an ID (and drop the /EMPTY/ option).
