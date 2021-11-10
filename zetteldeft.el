@@ -224,11 +224,8 @@ To disable, set to empty string rather than to nil."
   :set 'zetteldeft--id-font-lock-setup)
 
 (defun zetteldeft--link-regex ()
-  "Return regex for a Zetteldeft link.
-Concat link indicator, id-regex, and link suffix."
-  (concat zetteldeft-link-indicator
-          zetteldeft-id-regex
-          zetteldeft-link-suffix))
+  "Return regex for a Zetteldeft link."
+  zetteldeft-id-regex)
 
 (defcustom zetteldeft-tag-regex "[#@][[:alnum:]_-]+"
   "Regular expression for zetteldeft tags."
